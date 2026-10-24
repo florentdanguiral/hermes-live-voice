@@ -72,6 +72,29 @@ const VOXTRAL_VAD_END_OF_TURN_MS = 700;
 const VOXTRAL_GATE_MAX_REJECTS = 2;
 const VOXTRAL_GATE_TIMEOUT_MS = 4_000;
 const VOXTRAL_GATE_HOLD_TIMEOUT_MS = 8_000;
+/**
+ * Seuil d'energie (RMS normalise 0-1) sous lequel on ne lance PAS le repli
+ * batch : un tour aussi faible est du bruit ambiant (eau, route), pas de la
+ * parole. Evite de depenser un appel API STT sur du bruit a chaque faux
+ * declenchement du VAD.
+ */
+const VOXTRAL_BATCH_MIN_RMS = 0.005;
+
+/**
+ * RMS normalise (0-1) d'un buffer PCM 16-bit signed little-endian mono.
+ * Utilise pour juger si un tour capturé contient de la vraie parole ou
+ * juste du bruit ambiant avant de lancer un appel API batch.
+ */
+function rmsOfPcm16(pcm: Buffer): number {
+  if (pcm.length < 2) return 0;
+  let sumSq = 0;
+  const samples = pcm.length >> 1;
+  for (let i = 0; i < samples; i++) {
+    const s = pcm.readInt16LE(i * 2) / 32768;
+    sumSq += s * s;
+  }
+  return Math.sqrt(sumSq / samples);
+}
 
 interface VoxtralAdapterConfig {
   apiKey?: string;
@@ -498,22 +521,41 @@ class VoxtralLiveSession implements LiveModelSession {
    * (constate sur audio micro revalide par transcription batch et Vosk). Si le
    * transcript du tour est vide, on transcrit l'audio du tour via l'API batch
    * avant d'abandonner le tour.
+   *
+   * Deux gardes anti-bruit :
+   * - Seuil d'energie RMS sur l'audio du tour : sous VOXTRAL_BATCH_MIN_RMS,
+   *   c'est du bruit ambiant, pas de la parole -> on skip le batch (economie API).
+   * - plausibleSpeech() sur le transcript (realtime OU batch) : un petit LLM
+   *   juge si c'est de la vraie parole francaise ou un artefact de bruit.
    */
   private async dispatchWithBatchFallback(transcript: string): Promise<boolean> {
     let text = transcript.trim();
+    // Garde sur le transcript realtime aussi (au cas ou il produirait un
+    // artefact sur du bruit soutenu).
+    if (text && !(await this.plausibleSpeech(text))) {
+      console.log(`[voxtral-debug] realtime transcript rejected (noise artifact): ${JSON.stringify(text.slice(0, 60))}`);
+      text = "";
+    }
     if (!text && this.turnAudio.length >= 10) {
-      try {
-        text = await this.batchTranscribe(Buffer.concat(this.turnAudio));
-        console.log(`[voxtral-debug] batch fallback transcript=${JSON.stringify(text.slice(0, 80))}`);
-        // Garde anti-hallucination : le batch peut lire du bruit (eau qui bout)
-        // comme une pseudo-phrase. L'energie ne peut pas distinguer les bulles
-        // d'une voix au meme niveau - on laisse le modele juger la plausibilite.
-        if (text && !(await this.plausibleSpeech(text))) {
-          console.log(`[voxtral-debug] batch transcript rejected (noise artifact): ${JSON.stringify(text.slice(0, 60))}`);
-          text = "";
+      const pcm = Buffer.concat(this.turnAudio);
+      const rms = rmsOfPcm16(pcm);
+      console.log(`[voxtral-debug] batch candidate rms=${rms.toFixed(4)} frames=${this.turnAudio.length}`);
+      if (rms < VOXTRAL_BATCH_MIN_RMS) {
+        console.log(`[voxtral-debug] batch skipped (rms ${rms.toFixed(4)} < min ${VOXTRAL_BATCH_MIN_RMS})`);
+      } else {
+        try {
+          text = await this.batchTranscribe(pcm);
+          console.log(`[voxtral-debug] batch fallback transcript=${JSON.stringify(text.slice(0, 80))}`);
+          // Garde anti-hallucination : le batch peut lire du bruit (eau qui bout)
+          // comme une pseudo-phrase. L'energie ne peut pas distinguer les bulles
+          // d'une voix au meme niveau - on laisse le modele juger la plausibilite.
+          if (text && !(await this.plausibleSpeech(text))) {
+            console.log(`[voxtral-debug] batch transcript rejected (noise artifact): ${JSON.stringify(text.slice(0, 60))}`);
+            text = "";
+          }
+        } catch (error) {
+          console.log(`[voxtral-debug] batch fallback failed: ${errorToMessage(error)}`);
         }
-      } catch (error) {
-        console.log(`[voxtral-debug] batch fallback failed: ${errorToMessage(error)}`);
       }
     }
     this.turnAudio = [];
@@ -593,6 +635,9 @@ class VoxtralLiveSession implements LiveModelSession {
     form.append("file", new Blob([Buffer.concat([header, pcm])], { type: "audio/wav" }), "turn.wav");
     form.append("model", "voxtral-mini-latest");
     form.append("language", "fr");
+    // Biais de contexte : aide le STT a reconnaitre les noms propres de
+    // l'assistant ("Hermes", "Marie") meme dans du bruit ambiant.
+    form.append("context_bias", JSON.stringify(["Hermes", "Marie", "assistant"]));
     const response = await fetch(`${base}/v1/audio/transcriptions`, {
       method: "POST",
       headers: { Authorization: `Bearer ${this.config.apiKey}` },
