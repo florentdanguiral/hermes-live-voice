@@ -637,14 +637,21 @@ class VoxtralLiveSession implements LiveModelSession {
     form.append("language", "fr");
     // Biais de contexte : aide le STT a reconnaitre les noms propres de
     // l'assistant ("Hermes", "Marie") meme dans du bruit ambiant.
-    form.append("context_bias", JSON.stringify(["Hermes", "Marie", "assistant"]));
+    // Format attendu par l'API Mistral : chaine separee par des virgules,
+    // SANS espaces (ex: "Hermes,Marie,assistant") — un JSON array provoque
+    // une erreur 400 silencieuse.
+    form.append("context_bias", "Hermes,Marie,assistant");
     const response = await fetch(`${base}/v1/audio/transcriptions`, {
       method: "POST",
       headers: { Authorization: `Bearer ${this.config.apiKey}` },
       body: form,
       signal: AbortSignal.timeout(10_000),
     });
-    if (!response.ok) throw new Error(`batch transcribe failed with HTTP ${response.status}`);
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      console.log(`[voxtral-debug] batch transcribe HTTP ${response.status}: ${body.slice(0, 300)}`);
+      throw new Error(`batch transcribe failed with HTTP ${response.status}`);
+    }
     const payload = (await response.json()) as { text?: string };
     return (payload.text ?? "").trim();
   }
