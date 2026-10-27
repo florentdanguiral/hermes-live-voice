@@ -36,7 +36,10 @@ const VOXTRAL_TTS_OUTPUT_RATE = 24_000;
 /** Délai avant de retenter une connexion STT échouée (la session reste vivante). */
 const VOXTRAL_STT_RETRY_MS = 3_000;
 const VOXTRAL_STT_CONNECT_TIMEOUT_MS = 10_000;
-const VOXTRAL_STT_FINAL_TIMEOUT_MS = 12_000;
+/** Le realtime Voxtral reste souvent muet sur l'audio micro reel : on n'attend
+ * que 4 s avant de basculer sur le batch (qui lui fonctionne). 12 s rendait
+ * la reponse trop lente. */
+const VOXTRAL_STT_FINAL_TIMEOUT_MS = 4_000;
 const VOXTRAL_AUDIO_CHUNK_BYTES = 8_192;
 // Server-side turn detection: the chained adapter owns turn-taking, so the
 // conversation flows naturally (speak -> pause -> Hermes replies) instead of
