@@ -146,9 +146,10 @@ class VoxtralLiveSession implements LiveModelSession {
   private sttReady = false;
   private sttFailure = "";
   private sttFailedAt = 0;
-  /** Tours consécutifs sans aucun delta realtime — au-delà de 3, on désactive
+  /** Tours consécutifs sans aucun delta realtime — au-delà de 10, on désactive
    * le realtime (il est muet sur l'audio micro réel) et on passe direct au
-   * batch. Économie : ~4 s de timeout par tour. */
+   * batch. Seuil élevé pour garder le realtime (meilleure qualité) le plus
+   * longtemps possible. */
   private realtimeSilentTurns = 0;
   private realtimeTurnDeltas = 0;
   private realtimeDisabled = false;
@@ -536,7 +537,7 @@ class VoxtralLiveSession implements LiveModelSession {
     // sans aucun delta, on désactive le realtime (économie ~4 s/tour).
     if (this.realtimeTurnDeltas === 0) {
       this.realtimeSilentTurns++;
-      if (this.realtimeSilentTurns >= 3 && !this.realtimeDisabled) {
+      if (this.realtimeSilentTurns >= 10 && !this.realtimeDisabled) {
         this.realtimeDisabled = true;
         console.log("[voxtral-debug] realtime disabled after 3 silent turns — batch only");
       }
@@ -553,7 +554,24 @@ class VoxtralLiveSession implements LiveModelSession {
     let transcript: string;
     try {
       transcript = await new Promise<string>((resolve, reject) => {
+        const startTime = Date.now();
+        // Fast fallback : si le realtime n'a produit aucun delta après 500 ms,
+        // on ne l'attend plus — on résout vide pour déclencher le batch
+        // immédiatement. Économie ~1 s quand le realtime est muet.
+        const fastFallback = setInterval(() => {
+          if (
+            Date.now() - startTime >= 500 &&
+            this.realtimeTurnDeltas === 0 &&
+            !this.partial.trim()
+          ) {
+            clearInterval(fastFallback);
+            clearTimeout(timer);
+            this.pendingFlush = null;
+            resolve("");
+          }
+        }, 100);
         const timer = setTimeout(() => {
+          clearInterval(fastFallback);
           this.pendingFlush = null;
           resolve(this.partial.trim());
         }, VOXTRAL_STT_FINAL_TIMEOUT_MS);
@@ -630,10 +648,10 @@ class VoxtralLiveSession implements LiveModelSession {
     if (words.length < 2) return false;
     // Ratio de caracteres latins (francais inclus)
     const latin = (trimmed.match(/[a-zA-ZàâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ]/g) || []).length;
-    if (latin / trimmed.length < 0.7) return false;
+    if (latin / trimmed.length < 0.5) return false;
     // Mots anglais frequents = hallucination typique du STT sur du bruit
     const englishHits = (trimmed.match(/\b(the|and|you|that|this|with|for|have|not|but|what|all|her|she|him|his|they|them|its|was|were|been|are|said|says|okay|ok|sure|yeah|hello|hi|hey|running|around|phone|got|get|like|just|don|can|won)\b/gi) || []).length;
-    if (englishHits >= 2 && words.length <= 5) return false;
+    if (englishHits >= 3 && words.length <= 5) return false;
     return true;
   }
 
