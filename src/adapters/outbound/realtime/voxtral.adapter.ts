@@ -574,14 +574,14 @@ class VoxtralLiveSession implements LiveModelSession {
    * Deux gardes anti-bruit :
    * - Seuil d'energie RMS sur l'audio du tour : sous VOXTRAL_BATCH_MIN_RMS,
    *   c'est du bruit ambiant, pas de la parole -> on skip le batch (economie API).
-   * - plausibleSpeech() sur le transcript (realtime OU batch) : un petit LLM
-   *   juge si c'est de la vraie parole francaise ou un artefact de bruit.
+   * - plausibleSpeech() sur le transcript (realtime OU batch) : heuristique
+   *   locale (0 appel API) juge si c'est de la vraie parole francaise.
    */
   private async dispatchWithBatchFallback(transcript: string): Promise<boolean> {
     let text = transcript.trim();
     // Garde sur le transcript realtime aussi (au cas ou il produirait un
     // artefact sur du bruit soutenu).
-    if (text && !(await this.plausibleSpeech(text))) {
+    if (text && !this.plausibleSpeech(text)) {
       console.log(`[voxtral-debug] realtime transcript rejected (noise artifact): ${JSON.stringify(text.slice(0, 60))}`);
       text = "";
     }
@@ -598,7 +598,7 @@ class VoxtralLiveSession implements LiveModelSession {
           // Garde anti-hallucination : le batch peut lire du bruit (eau qui bout)
           // comme une pseudo-phrase. L'energie ne peut pas distinguer les bulles
           // d'une voix au meme niveau - on laisse le modele juger la plausibilite.
-          if (text && !(await this.plausibleSpeech(text))) {
+          if (text && !this.plausibleSpeech(text)) {
             console.log(`[voxtral-debug] batch transcript rejected (noise artifact): ${JSON.stringify(text.slice(0, 60))}`);
             text = "";
           }
@@ -613,55 +613,28 @@ class VoxtralLiveSession implements LiveModelSession {
   }
 
   /**
-   * Le transcript sort-il d'une vraie parole ? Le batch hallucine parfois sur
-   * du bruit de fond (eau qui bout -> pseudo-phrases). Rejet = pas de reponse.
+   * Le transcript ressemble-t-il a une vraie parole francaise ?
+   * Heuristique locale (0 appel API - le LLM gate coutait ~0.5-1 s).
+   * Le batch hallucine parfois sur du bruit de fond (eau qui bout ->
+   * pseudo-phrases anglaises ou cyrilliques). Rejet = pas de reponse.
+   *
+   * Regles :
+   * - trop court (< 3 caracteres ou 1 mot) -> bruit
+   * - ratio de caracteres latins < 70 % -> langue etrangere (hallucination)
+   * - 2+ mots anglais courants dans une phrase courte -> hallucination anglaise
    */
-  private async plausibleSpeech(transcript: string): Promise<boolean> {
-    const base = this.config.baseUrl.replace(/\/$/u, "");
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), VOXTRAL_GATE_TIMEOUT_MS);
-    try {
-      const response = await fetch(`${base}/v1/chat/completions`, {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          Authorization: `Bearer ${this.config.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: this.config.gateModel || "mistral-small-latest",
-          messages: [
-            {
-              role: "system",
-              content:
-                "You judge whether a candidate transcript was real HUMAN SPEECH " +
-                "or a transcription artifact from background NOISE (boiling " +
-                "water, road rumble, wind). The speaker SPEAKS FRENCH ONLY: a " +
-                "transcript that is clearly English, Spanish or another " +
-                "non-French language is an artifact and you must answer NO, " +
-                "even if it looks like a coherent sentence. Artifacts also " +
-                "look like garbled word salads lacking syntax. Real speech is " +
-                "a coherent FRENCH phrase. Answer YES or NO only.",
-            },
-            { role: "user", content: transcript.slice(0, 500) },
-          ],
-          max_tokens: 4,
-          temperature: 0,
-        }),
-      });
-      if (!response.ok) return true;
-      const payload = (await response.json()) as {
-        choices?: Array<{ message?: { content?: string } }>;
-      };
-      const answer = String(payload.choices?.[0]?.message?.content ?? "yes")
-        .trim()
-        .toLowerCase();
-      return !answer.startsWith("no");
-    } catch {
-      return true;
-    } finally {
-      clearTimeout(timer);
-    }
+  private plausibleSpeech(transcript: string): boolean {
+    const trimmed = transcript.trim();
+    if (trimmed.length < 3) return false;
+    const words = trimmed.split(/\s+/).filter((w) => w.length > 0);
+    if (words.length < 2) return false;
+    // Ratio de caracteres latins (francais inclus)
+    const latin = (trimmed.match(/[a-zA-Z]/g) || []).length;
+    if (latin / trimmed.length < 0.7) return false;
+    // Mots anglais frequents = hallucination typique du STT sur du bruit
+    const englishHits = (trimmed.match(/\b(the|and|you|that|this|with|for|have|not|but|what|all|her|she|him|his|they|them|its|was|were|been|are|said|says|okay|ok|sure|yeah|hello|hi|hey|running|around|phone|got|get|like|just|don|can|won)\b/gi) || []).length;
+    if (englishHits >= 2 && words.length <= 5) return false;
+    return true;
   }
 
   private async batchTranscribe(pcm: Buffer): Promise<string> {
