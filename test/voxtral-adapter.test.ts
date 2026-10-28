@@ -70,9 +70,14 @@ describe("voxtralSpeechFriendly", () => {
 
   it("keeps short inline code but summarizes long technical tokens", () => {
     expect(voxtralSpeechFriendly("la commande `npm test` fonctionne")).toContain("npm test");
+    // Hash hex (16+ caractères) -> "(identifiant)"
     expect(voxtralSpeechFriendly("le hash a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2 est bon")).toContain(
-      "(identifiant technique)",
+      "(identifiant)",
     );
+    // Identifiant technique long non-hex (30+ caractères) -> "(identifiant technique)"
+    expect(
+      voxtralSpeechFriendly("le token abcdefghijklmnopqrstuvwxyz1234567890ABCDEF est secret"),
+    ).toContain("(identifiant technique)");
   });
 
   it("falls back to the original text when everything would be stripped", () => {

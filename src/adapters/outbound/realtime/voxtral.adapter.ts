@@ -899,18 +899,50 @@ function voxtralSpokenToolText(call: LiveToolCall, response: Record<string, unkn
 /**
  * Speech-friendly rendering of an assistant reply for TTS. The full text stays
  * available in the transcript; this only shapes what is SPOKEN. Code blocks,
- * URLs, file paths and long technical identifiers are replaced by short
- * natural-language summaries so the voice channel stays conversational.
+ * URLs, file paths, hashes, JSON blobs, lists, markdown and long technical
+ * identifiers are replaced by short natural-language summaries so the voice
+ * channel stays conversational.
  */
 export function voxtralSpeechFriendly(text: string): string {
+  // Compte les items d'une liste à puces (lignes commençant par -, *, + ou \d+.)
+  const bulletItems = text.match(/^\s*[-*+]\s+\S|\s*\d+\.\s+\S/gmu)?.length ?? 0;
+  const hasLongList = bulletItems >= 3;
+
   const spoken = text
+    // 1. Blocs de code fenced ```...```
     .replace(/```[\s\S]*?```/gu, " (bloc de code) ")
+    // 2. Hash / hex (16+ caractères hexadécimaux — SHA, MD5, tokens…)
+    .replace(/\b[0-9a-fA-F]{16,}\b/gu, " (identifiant) ")
+    // 3. URLs
+    .replace(/https?:\/\/\S+/gu, " (lien) ")
+    // 4. Chemins de fichiers
+    .replace(/(?:~\/)?\/?(?:[A-Za-z0-9_.+-]+\/){2,}[A-Za-z0-9_.+-]*/gu, " (chemin de fichiers) ")
+    // 5. JSON / YAML inline volumineux ({...} ou [...] de 30+ caractères)
+    .replace(/\{[^{}]{30,}\}|\[[^\[\]]{30,}\]/gu, " (données structurées) ")
+    // 6. Lignes de tableau markdown (|---|---|) et séparateurs (---, ===)
+    .replace(/^\s*\|?[\s:|-]+\|[\s:|-]*\|?\s*$/gmu, " ")
+    .replace(/^\s*[-=]{3,}\s*$/gmu, " ")
+    // 7. Listes à puces : si 3+ items, résumer
+    .replace(
+      /(?:^\s*[-*+]\s+\S[^\n]*(?:\n|$)){3,}/gmu,
+      hasLongList ? ` (liste de ${bulletItems} éléments) ` : "$&",
+    )
+    // 8. Markdown inline : **gras**, *italique*, # titres, > citations
+    .replace(/\*\*([^*]+)\*\*/gu, "$1")
+    .replace(/\*([^*]+)\*/gu, "$1")
+    .replace(/^\s*#{1,6}\s+/gmu, "")
+    .replace(/^\s*>\s?/gmu, "")
+    // 9. Liens markdown [texte](url)
+    .replace(/\[([^\]]+)\]\([^)]+\)/gu, "$1")
+    // 10. Code inline `code` : gardé si court, sinon résumé
     .replace(/`([^`\n]+)`/gu, (_match, code: string) =>
       code.trim().split(/\s+/u).length <= 3 ? ` ${code.trim()} ` : " (extrait de code) ",
     )
-    .replace(/https?:\/\/\S+/gu, " (lien) ")
-    .replace(/(?:~\/)?\/?(?:[A-Za-z0-9_.+-]+\/){2,}[A-Za-z0-9_.+-]*/gu, " (chemin de fichiers) ")
+    // 11. Identifiants techniques longs (30+ caractères)
     .replace(/\b[A-Za-z0-9_.\/+-]{30,}\b/gu, " (identifiant technique) ")
+    // 12. Nombres longs (8+ chiffres — téléphone, IBAN, etc.)
+    .replace(/\b\d{8,}\b/gu, " (numéro) ")
+    // 13. Espaces multiples
     .replace(/\s{2,}/gu, " ")
     .trim();
   return spoken || text.trim();
