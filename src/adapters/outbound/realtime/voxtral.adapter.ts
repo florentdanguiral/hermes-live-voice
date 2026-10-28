@@ -303,6 +303,13 @@ class VoxtralLiveSession implements LiveModelSession {
     this.frameRing.push(Buffer.from(frame.data, "base64"));
     if (this.frameRing.length > 400) this.frameRing.splice(0, this.frameRing.length - 400);
     this.vadFrame(frame.data);
+    // Pendant le TTS, ne PAS envoyer l'audio au STT realtime : l'écho
+    // acoustique de l'assistant serait transcrit comme parole utilisateur
+    // (feedback loop — Marie se répond à elle-même). Le VAD continue de
+    // tourner pour le barge-in, et le turnAudio pour le batch fallback.
+    if (this.ttsAbort) {
+      return;
+    }
     try {
       await this.ensureStt();
     } catch {
@@ -835,6 +842,17 @@ class VoxtralLiveSession implements LiveModelSession {
       if (this.ttsAbort === abort) {
         this.ttsAbort = null;
         this.ttsStartedAt = 0;
+        // Vider le buffer du STT realtime : pendant le TTS on ne lui a rien
+        // envoyé, mais il peut avoir un résidu d'écho dans son état interne.
+        // Un flush garantit qu'il repart à zéro pour le prochain tour.
+        this.partial = "";
+        if (this.stt && this.stt.readyState === WebSocket.OPEN) {
+          try {
+            this.stt.send(JSON.stringify({ type: "input_audio.flush" }));
+          } catch {
+            // Ignoré — le STT sera reconnecté au prochain audio.
+          }
+        }
       }
     }
   }
