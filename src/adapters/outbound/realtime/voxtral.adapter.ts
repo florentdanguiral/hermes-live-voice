@@ -67,7 +67,9 @@ const VOXTRAL_VAD_ONSET_MS = 150;
 /** Sustained speech required to barge in while the assistant is speaking:
  * a clap, cough or drop is a burst well under this, real speech is above. */
 const VOXTRAL_BARGE_ONSET_MS = 450;
-const VOXTRAL_VAD_END_OF_TURN_MS = 700;
+/** 1.2 s de silence avant de conclure le tour : laisse le temps des pauses
+ * naturelles mid-phrase (sinon « je voudrais… » est coupé et envoyé tel quel). */
+const VOXTRAL_VAD_END_OF_TURN_MS = 1_200;
 // Completeness gate: before committing a VAD-detected end of turn, a cheap
 // model judges whether the utterance is complete. An incomplete one ("je
 // voudrais…") re-arms the VAD and keeps listening instead of being sent to
@@ -647,7 +649,7 @@ class VoxtralLiveSession implements LiveModelSession {
     // Format attendu par l'API Mistral : chaine separee par des virgules,
     // SANS espaces (ex: "Hermes,Marie,assistant") — un JSON array provoque
     // une erreur 400 silencieuse.
-    form.append("context_bias", "Hermes,Marie,assistant");
+    form.append("context_bias", "Hermes,Marie,assistant,switch,Salut,Bonjour");
     const response = await fetch(`${base}/v1/audio/transcriptions`, {
       method: "POST",
       headers: { Authorization: `Bearer ${this.config.apiKey}` },
