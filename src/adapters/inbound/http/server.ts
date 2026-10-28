@@ -538,6 +538,34 @@ async function handleHttp(
     methodNotAllowed(req, res, "GET, HEAD, POST");
     return;
   }
+  const conversationMessages = /^\/v1\/conversations\/([^/]+)\/messages$/.exec(url.pathname);
+  if (conversationMessages) {
+    const assertSessionsSupported = options.hermes.assertSessionsSupported;
+    const getSessionHistory = options.hermes.getSessionHistory;
+    if (!assertSessionsSupported || !getSessionHistory) {
+      json(req, res, 503, { status: "unavailable", error: "Hermes session continuity is unavailable." });
+      return;
+    }
+    if (!isGetOrHead(req)) {
+      methodNotAllowed(req, res, "GET, HEAD");
+      return;
+    }
+    const sessionId = decodeURIComponent(conversationMessages[1]);
+    if (sessionId.length === 0 || sessionId.length > 256
+      || /[\u0000-\u001f\u007f-\u009f/]/.test(sessionId)
+    ) {
+      json(req, res, 400, { status: "invalid_request", error: "Conversation id is invalid." });
+      return;
+    }
+    await assertSessionsSupported.call(options.hermes);
+    const history = await getSessionHistory.call(options.hermes, sessionId);
+    json(req, res, 200, {
+      object: "list",
+      session_id: history.sessionId,
+      messages: history.messages,
+    });
+    return;
+  }
   json(req, res, 404, { status: "not_found" });
 }
 
@@ -551,7 +579,10 @@ function isAuthorized(req: IncomingMessage, config: AppConfig, url: URL, options
 }
 
 function requiresHttpAuth(pathname: string): boolean {
-  return pathname === "/ready" || pathname === "/v1/capabilities" || pathname === "/v1/conversations";
+  if (pathname === "/ready" || pathname === "/v1/capabilities" || pathname === "/v1/conversations") {
+    return true;
+  }
+  return /^\/v1\/conversations\/[^/]+\/messages$/.test(pathname);
 }
 
 function isWebSocketOriginAllowed(req: IncomingMessage, config: AppConfig): boolean {
