@@ -37,9 +37,9 @@ const VOXTRAL_TTS_OUTPUT_RATE = 24_000;
 const VOXTRAL_STT_RETRY_MS = 3_000;
 const VOXTRAL_STT_CONNECT_TIMEOUT_MS = 10_000;
 /** Le realtime Voxtral reste souvent muet sur l'audio micro reel : on n'attend
- * que 4 s avant de basculer sur le batch (qui lui fonctionne). 12 s rendait
- * la reponse trop lente. */
-const VOXTRAL_STT_FINAL_TIMEOUT_MS = 4_000;
+ * que 1.5 s avant de basculer sur le batch (qui lui fonctionne). 4 s était
+ * trop long quand le realtime ne produit rien. */
+const VOXTRAL_STT_FINAL_TIMEOUT_MS = 1_500;
 const VOXTRAL_AUDIO_CHUNK_BYTES = 8_192;
 // Server-side turn detection: the chained adapter owns turn-taking, so the
 // conversation flows naturally (speak -> pause -> Hermes replies) instead of
@@ -73,9 +73,9 @@ const VOXTRAL_BARGE_ONSET_MS = 450;
  * à revenir ; sans ce garde-fou, l'assistant détecte sa propre voix comme
  * de la parole utilisateur et se coupe (feedback loop). */
 const VOXTRAL_TTS_ECHO_GUARD_MS = 800;
-/** 1.2 s de silence avant de conclure le tour : laisse le temps des pauses
- * naturelles mid-phrase (sinon « je voudrais… » est coupé et envoyé tel quel). */
-const VOXTRAL_VAD_END_OF_TURN_MS = 1_200;
+/** 900 ms de silence avant de conclure le tour : compromis entre latence et
+ * pauses naturelles mid-phrase (1.2 s coupait moins mais ralentissait). */
+const VOXTRAL_VAD_END_OF_TURN_MS = 900;
 // Completeness gate: before committing a VAD-detected end of turn, a cheap
 // model judges whether the utterance is complete. An incomplete one ("je
 // voudrais…") re-arms the VAD and keeps listening instead of being sent to
@@ -146,6 +146,12 @@ class VoxtralLiveSession implements LiveModelSession {
   private sttReady = false;
   private sttFailure = "";
   private sttFailedAt = 0;
+  /** Tours consécutifs sans aucun delta realtime — au-delà de 3, on désactive
+   * le realtime (il est muet sur l'audio micro réel) et on passe direct au
+   * batch. Économie : ~4 s de timeout par tour. */
+  private realtimeSilentTurns = 0;
+  private realtimeTurnDeltas = 0;
+  private realtimeDisabled = false;
   // Repli batch : audio du tour courant (le realtime peut rester muet sur de
   // l'audio pourtant valide - la transcription batch fonctionne, elle).
   private turnAudio: Buffer[] = [];
@@ -254,6 +260,7 @@ class VoxtralLiveSession implements LiveModelSession {
       const fragment = String(event.text ?? "");
       this.partial += fragment;
       this.partialActivityAt = Date.now();
+      this.realtimeTurnDeltas++;
       // Diagnostic (throttlé) : Voxtral entend-il le client ?
       if (Date.now() - this.lastSttDeltaLog > 2_000) {
         this.lastSttDeltaLog = Date.now();
@@ -307,7 +314,7 @@ class VoxtralLiveSession implements LiveModelSession {
     // acoustique de l'assistant serait transcrit comme parole utilisateur
     // (feedback loop — Marie se répond à elle-même). Le VAD continue de
     // tourner pour le barge-in, et le turnAudio pour le batch fallback.
-    if (this.ttsAbort) {
+    if (this.ttsAbort || this.realtimeDisabled) {
       return;
     }
     try {
@@ -525,9 +532,21 @@ class VoxtralLiveSession implements LiveModelSession {
   private async commitTurnInner(): Promise<boolean> {
     this.speechStarted = false;
     this.callbacks.onEvent({ type: "input_speech_stopped", provider: "voxtral" });
+    // Comptage des tours muets du realtime : au-delà de 3 tours consécutifs
+    // sans aucun delta, on désactive le realtime (économie ~4 s/tour).
+    if (this.realtimeTurnDeltas === 0) {
+      this.realtimeSilentTurns++;
+      if (this.realtimeSilentTurns >= 3 && !this.realtimeDisabled) {
+        this.realtimeDisabled = true;
+        console.log("[voxtral-debug] realtime disabled after 3 silent turns — batch only");
+      }
+    } else {
+      this.realtimeSilentTurns = 0;
+    }
+    this.realtimeTurnDeltas = 0;
     const ws = this.stt;
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      // No live wire: fall back to whatever partials accumulated.
+    if (this.realtimeDisabled || !ws || ws.readyState !== WebSocket.OPEN) {
+      // Realtime désactivé ou pas de connexion : batch direct.
       return await this.dispatchWithBatchFallback(this.partial.trim());
     }
     ws.send(JSON.stringify({ type: "input_audio.flush" }));
