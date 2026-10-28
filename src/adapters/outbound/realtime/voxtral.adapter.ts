@@ -295,11 +295,15 @@ class VoxtralLiveSession implements LiveModelSession {
     this.vadFrame(frame.data);
     try {
       await this.ensureStt();
-    } catch (error) {
-      this.callbacks.onError?.(error);
+    } catch {
+      // Le realtime est optionnel : le batch fallback prend le relais.
+      // Ne PAS propager l'erreur via onError — ça casserait la session
+      // et provoquerait une boucle infinie de "realtime provider error".
       return;
     }
-    this.stt!.send(JSON.stringify({ type: "input_audio.append", audio: frame.data }));
+    if (this.stt && this.stt.readyState === WebSocket.OPEN) {
+      this.stt.send(JSON.stringify({ type: "input_audio.append", audio: frame.data }));
+    }
   }
 
   /**
