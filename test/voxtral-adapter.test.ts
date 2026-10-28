@@ -80,6 +80,32 @@ describe("voxtralSpeechFriendly", () => {
     ).toContain("(identifiant technique)");
   });
 
+  it("reads every list item instead of collapsing the list", () => {
+    const spoken = voxtralSpeechFriendly(
+      "Concrètement :\n- Premier point\n- Deuxième point\n- Troisième point",
+    );
+    expect(spoken).toContain("Premier point");
+    expect(spoken).toContain("Deuxième point");
+    expect(spoken).toContain("Troisième point");
+    expect(spoken).not.toContain("liste de");
+    expect(spoken).not.toContain("-");
+  });
+
+  it("reads numbered list items too", () => {
+    const spoken = voxtralSpeechFriendly("1. D'abord ceci\n2. Ensuite cela");
+    expect(spoken).toContain("D'abord ceci");
+    expect(spoken).toContain("Ensuite cela");
+  });
+
+  it("flattens markdown tables without dropping any cell", () => {
+    const spoken = voxtralSpeechFriendly("| Officiel | CFW |\n|---|---|\n| Nintendo | parallèle |");
+    expect(spoken).toContain("Officiel");
+    expect(spoken).toContain("CFW");
+    expect(spoken).toContain("Nintendo");
+    expect(spoken).toContain("parallèle");
+    expect(spoken).not.toContain("|");
+  });
+
   it("falls back to the original text when everything would be stripped", () => {
     expect(voxtralSpeechFriendly("   ")).toBe("   ".trim());
   });

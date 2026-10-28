@@ -899,15 +899,12 @@ function voxtralSpokenToolText(call: LiveToolCall, response: Record<string, unkn
 /**
  * Speech-friendly rendering of an assistant reply for TTS. The full text stays
  * available in the transcript; this only shapes what is SPOKEN. Code blocks,
- * URLs, file paths, hashes, JSON blobs, lists, markdown and long technical
- * identifiers are replaced by short natural-language summaries so the voice
- * channel stays conversational.
+ * URLs, file paths, hashes, JSON blobs and long technical identifiers are
+ * replaced by short natural-language summaries so the voice channel stays
+ * conversational. Prose — including list items and table cells — is read in
+ * full: only the unpronounceable markup (bullets, pipes, markdown) is stripped.
  */
 export function voxtralSpeechFriendly(text: string): string {
-  // Compte les items d'une liste à puces (lignes commençant par -, *, + ou \d+.)
-  const bulletItems = text.match(/^\s*[-*+]\s+\S|\s*\d+\.\s+\S/gmu)?.length ?? 0;
-  const hasLongList = bulletItems >= 3;
-
   const spoken = text
     // 1. Blocs de code fenced ```...```
     .replace(/```[\s\S]*?```/gu, " (bloc de code) ")
@@ -919,14 +916,15 @@ export function voxtralSpeechFriendly(text: string): string {
     .replace(/(?:~\/)?\/?(?:[A-Za-z0-9_.+-]+\/){2,}[A-Za-z0-9_.+-]*/gu, " (chemin de fichiers) ")
     // 5. JSON / YAML inline volumineux ({...} ou [...] de 30+ caractères)
     .replace(/\{[^{}]{30,}\}|\[[^\[\]]{30,}\]/gu, " (données structurées) ")
-    // 6. Lignes de tableau markdown (|---|---|) et séparateurs (---, ===)
+    // 6. Tableaux markdown : séparateurs (---, ===) supprimés, cellules aplaties
     .replace(/^\s*\|?[\s:|-]+\|[\s:|-]*\|?\s*$/gmu, " ")
     .replace(/^\s*[-=]{3,}\s*$/gmu, " ")
-    // 7. Listes à puces : si 3+ items, résumer
-    .replace(
-      /(?:^\s*[-*+]\s+\S[^\n]*(?:\n|$)){3,}/gmu,
-      hasLongList ? ` (liste de ${bulletItems} éléments) ` : "$&",
-    )
+    .replace(/^\s*\|(.+)\|\s*$/gmu, (_match, row: string) =>
+      row.split("|").map((cell) => cell.trim()).filter((cell) => cell.length > 0).join(", "))
+    .replace(/\s+\|\s+/gu, ", ")
+    // 7. Listes : le texte de chaque item est lu, seules les puces disparaissent
+    .replace(/^\s*[-*+]\s+/gmu, "")
+    .replace(/^\s*\d+[.)]\s+/gmu, "")
     // 8. Markdown inline : **gras**, *italique*, # titres, > citations
     .replace(/\*\*([^*]+)\*\*/gu, "$1")
     .replace(/\*([^*]+)\*/gu, "$1")
