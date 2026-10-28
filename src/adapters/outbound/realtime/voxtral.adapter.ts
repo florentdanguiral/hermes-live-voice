@@ -629,7 +629,7 @@ class VoxtralLiveSession implements LiveModelSession {
     const words = trimmed.split(/\s+/).filter((w) => w.length > 0);
     if (words.length < 2) return false;
     // Ratio de caracteres latins (francais inclus)
-    const latin = (trimmed.match(/[a-zA-Z]/g) || []).length;
+    const latin = (trimmed.match(/[a-zA-ZàâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ]/g) || []).length;
     if (latin / trimmed.length < 0.7) return false;
     // Mots anglais frequents = hallucination typique du STT sur du bruit
     const englishHits = (trimmed.match(/\b(the|and|you|that|this|with|for|have|not|but|what|all|her|she|him|his|they|them|its|was|were|been|are|said|says|okay|ok|sure|yeah|hello|hi|hey|running|around|phone|got|get|like|just|don|can|won)\b/gi) || []).length;
