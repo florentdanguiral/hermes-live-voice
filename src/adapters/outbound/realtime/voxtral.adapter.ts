@@ -67,6 +67,12 @@ const VOXTRAL_VAD_ONSET_MS = 150;
 /** Sustained speech required to barge in while the assistant is speaking:
  * a clap, cough or drop is a burst well under this, real speech is above. */
 const VOXTRAL_BARGE_ONSET_MS = 450;
+/** Délai de garde anti-écho après le début du TTS : pendant les 800 ms qui
+ * suivent le démarrage de la synthèse vocale, le VAD ignore complètement
+ * l'audio entrant. L'écho acoustique (haut-parleur -> micro) met ~100-300 ms
+ * à revenir ; sans ce garde-fou, l'assistant détecte sa propre voix comme
+ * de la parole utilisateur et se coupe (feedback loop). */
+const VOXTRAL_TTS_ECHO_GUARD_MS = 800;
 /** 1.2 s de silence avant de conclure le tour : laisse le temps des pauses
  * naturelles mid-phrase (sinon « je voudrais… » est coupé et envoyé tel quel). */
 const VOXTRAL_VAD_END_OF_TURN_MS = 1_200;
@@ -150,6 +156,8 @@ class VoxtralLiveSession implements LiveModelSession {
   private pendingFlush: SttPendingFlush | null = null;
   private speechStarted = false;
   private ttsAbort: AbortController | null = null;
+  /** Timestamp du début du TTS en cours — pour le délai de garde anti-écho. */
+  private ttsStartedAt = 0;
   private sawAudioThisTurn = false;
   private lastSpeechAt = 0;
   private speechOnsetAt = 0;
@@ -324,6 +332,12 @@ class VoxtralLiveSession implements LiveModelSession {
     }
     this.vadFrames++;
     const now = Date.now();
+    // Délai de garde anti-écho : ignorer le VAD pendant les 800 ms qui suivent
+    // le début du TTS. L'écho acoustique de l'assistant ne doit pas être pris
+    // pour de la parole utilisateur (sinon feedback loop / barge-in fantôme).
+    if (this.ttsAbort && now - this.ttsStartedAt < VOXTRAL_TTS_ECHO_GUARD_MS) {
+      return;
+    }
     const level = pcm16RmsBase64(base64Pcm);
     if (level > this.vadMaxRms) this.vadMaxRms = level;
     if (this.vadFrames % 200 === 0) {
@@ -725,6 +739,7 @@ class VoxtralLiveSession implements LiveModelSession {
     if (this.ttsAbort) {
       this.ttsAbort.abort();
       this.ttsAbort = null;
+      this.ttsStartedAt = 0;
       this.callbacks.onEvent({ type: "response", status: "cancelled" });
       return true;
     }
@@ -749,6 +764,7 @@ class VoxtralLiveSession implements LiveModelSession {
     this.clearGateHoldTimer();
     this.ttsAbort?.abort();
     this.ttsAbort = null;
+    this.ttsStartedAt = 0;
     this.rejectPendingFlush(new Error("session closed"));
     const ws = this.stt;
     this.stt = null;
@@ -772,6 +788,7 @@ class VoxtralLiveSession implements LiveModelSession {
     const spoken = voxtralSpeechFriendly(clean);
     const abort = new AbortController();
     this.ttsAbort = abort;
+    this.ttsStartedAt = Date.now();
     try {
       const base = this.config.baseUrl.replace(/\/$/u, "");
       const response = await fetch(`${base}/v1/audio/speech`, {
@@ -815,7 +832,10 @@ class VoxtralLiveSession implements LiveModelSession {
         this.callbacks.onError?.(error);
       }
     } finally {
-      if (this.ttsAbort === abort) this.ttsAbort = null;
+      if (this.ttsAbort === abort) {
+        this.ttsAbort = null;
+        this.ttsStartedAt = 0;
+      }
     }
   }
 }
